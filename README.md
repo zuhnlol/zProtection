@@ -73,3 +73,26 @@ So far we now have udp[8]=0x38 and udp[37:4]=0x00000001 and udp[45]=0x00 and udp
 
 > udp dst port 41100 and udp[8]=0x38 and udp[37:4]=0x00000001 and udp[45]=0x00 and udp[46:4]=0x00000000
 ![tcpdump](https://i.imgur.com/pkv8ZZG.png)
+
+As you can see above, when inputting our filter into tcpdump and attempting a connection we get a tcpdump match for the filter we have built which ensures us that our filter is working as intended. tcpdump and other libpcap applications use the same or similar syntax as they are based on the Berkeley Packet Filter so this is a pretty good way of verifying that things are working as intended.
+
+Next we have to convert this to bytecode so we can actually use it with the bpf iptables module. We can do this using https://courvix.com/bpf.php which interprets our libpcap syntax and converts it to bytecode for us. Inputting our above BPF rule gives us the following bytecode:
+
+> 23,48 0 0 0,84 0 0 240,21 19 0 96,48 0 0 0,84 0 0 240,21 0 16 64,48 0 0 9,21 0 14 17,40 0 0 6,69 12 0 8191,177 0 0 0,72 0 0 2,21 0 9 41100,80 0 0 8,21 0 7 56,64 0 0 37,21 0 5 1,80 0 0 45,21 0 3 0,64 0 0 46,21 0 1 0,6 0 0 65535,6 0 0 0
+# Putting our rule into practice
+
+We must tell iptables to apply our BPF rule to NEW connections only, because not every OpenVPN packet will contain any of this information. This is also where our rule that accepts ESTABLISHED connections comes in handy, because once the first packet is received and accepted by the server, it will respond to the client which will then mark the connection as ESTABLISHED, thus all following packets will then be accepted by the rule that allows ESTABLISHED and RELATED connections and it no longer needs to be accepted by our BPF rule.
+
+Our final iptables rule becomes this:
+
+> iptables -I INPUT -m state --state NEW -m bpf --bytecode "23,48 0 0 0,84 0 0 240,21 19 0 96,48 0 0 0,84 0 0 240,21 0 16 64,48 0 0 9,21 0 14 17,40 0 0 6,69 12 0 8191,177 0 0 0,72 0 0 2,21 0 9 41100,80 0 0 8,21 0 7 56,64 0 0 37,21 0 5 1,80 0 0 45,21 0 3 0,64 0 0 46,21 0 1 0,6 0 0 65535,6 0 0 0" -j ACCEPT
+BPF does not have any ability to tell if a packet belongs to an ESTABLISHED connection or not; after all, BPF can only inspect packet data and connection state information is not included inside packets (it would be stupid if they did anyway.)
+
+# Summary
+We now have a server that allows only us into SSH, and allows only new packets containing the right bytes in the right places to be forwarded to our OpenVPN socket. The purpose of this is to mitigate any possibility of leaking DDoS traffic possibly overwhelming our hardware resources.
+
+This setup *can* be optimized by for example setting up the same concept in the mangle table, which will drop packets earlier in the network stack, thereby freeing up more CPU cycles and allowing us to process a greater number of packets per second. The mangle table is the earliest table of which we can make decisions on packets based on their connection state. The raw table does not have this ability.
+
+Again, this isn't meant to be a go-to page on DDoS protection or even helping protect OpenVPN. This is simply meant to be a case guide and give information that may come in handy to you. As I said in the beginning, I am not an expert in DDoS protection or the effective use of iptables - these are simply measures I began implementing many months ago in order to make the DDoS protection of my services just that little bit more robust.
+
+Finally, I did not write this intending for you to copy and paste what I'm doing. Various different OpenVPN settings may completely change some sections of the packet. You should do your own analysis using this as a guide. The rule I've built here was used and tested on my own server with my own configuration and may not work for yours.
