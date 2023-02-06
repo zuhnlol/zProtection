@@ -40,3 +40,36 @@ Looking at the Wireshark dissection for the OpenVPN protocol we can see numerous
 
  The next part of the packet contains an 8 byte long session ID. This is a random value used to identify the TLS session, and because it is a random value we can't do much with this. It will not be included as en evaluated field for this guide.
  
+## HMAC
+
+![HMAC](https://i.imgur.com/UXys8dO.png)
+
+The next part is a 20 (or sometimes 16) byte long value. This field contains the HMAC signature of the encapsulation header and will differ between all clients, so this isn't worth evaluating for this guide.
+
+## Message ID
+
+![Message ID](https://i.imgur.com/8cesMCu.png)
+
+Next we have a 4 byte long message ID starting at offset 37 and is an incremental number identifying the packet sequence and is primarily used for replay protection within OpenVPN. For example, the first packet sent by the client (such as P_CONTROL_HARD_RESET_CLIENT_V2) will have a message ID of 1. This is helpful, because now we know every new packet must contain a 0x01 at the location of the message ID field inside the packet. Since it is 4 bytes long and we're dealing with new connection packets only, the message ID will be preceeded by a number of 0 bytes. Our message ID is 0x00000001. This puts our BPF rule at udp[8]=0x38 and udp[37:4]=0x00000001.
+
+## Timestamp
+
+![Net Time](https://i.imgur.com/sDAZKs8.png)
+
+The next segment contains a 4 byte long timestamp of the time the packet was sent by the client in Unix Epoch format. So Converting the bytes seen in the screenshot above (0x60, 0x23, 0xc9, 0xa4) to decimal, we get 1612958116, this is our Unix Epoch time. Converting this to a human readable time and date we get Wednesday, 10 February 2021 11:55:16, which is what Wireshark is reporting to us. Using BPF, we could use some logical operators to tell iptables to check if the timestamp is possible at the time the rule is active. For example, we know that we shouldn't be receiving packets with a timestep that below 1600000000 because that dates back to September 2020. At the time of writing this, I am unsure how it would be best to implement this rule, but I suppose it doesn't hurt to tell iptables to drop packets that have an unrealistic timestamp. For example, if we wanted to tell iptables to only accept packets containing a timestamp from after September 2020, we could use the following BPF rule:
+
+> udp[41:4]>=0x5f5e1000
+This says that the timestamp must be greater than or equal to 1600000000, which is Unix Epoch time and is an ever incrementing number.
+
+I will not be including this in the final rules for now, but with XDP, some wonderful things would be possible.
+
+## Packet ID + Array Length
+
+![Array Length](https://i.imgur.com/AZm75PL.png)
+
+Our next segment contains an array length of the packet ID which is 1 byte. Since this is the first packet received, both of these things are set to 0 bytes. This is very similar to the Message ID field in the packet. Knowing this, we can end our BPF filter with udp[45]=0x00 and udp[46:4]=0x00000000.
+
+So far we now have udp[8]=0x38 and udp[37:4]=0x00000001 and udp[45]=0x00 and udp[46:4]=0x00000000 but we should be a little bit more specific. We are using the UDP protocol and our OpenVPN port is 41100, so we should tell iptables BPF to accept packets with that port only as well. Our final BPF filter becomes 
+
+> udp dst port 41100 and udp[8]=0x38 and udp[37:4]=0x00000001 and udp[45]=0x00 and udp[46:4]=0x00000000
+![tcpdump](https://i.imgur.com/pkv8ZZG.png)
